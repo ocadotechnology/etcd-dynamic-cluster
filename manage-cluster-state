@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+
+import ast
+import boto3
+import logging
+import os
+import requests
+import textwrap
+
+# ETCD API https://coreos.com/etcd/docs/2.0.11/other_apis.html
+ADD_OK = 201
+ALREADY_ADDED = 409
+DELETE_OK = 204
+DELETE_GONE = 410
+
+LOGGER = logging.getLogger(__name__)
+
+WAIT_PERIOD = 600
+
+
+class ConfigurationFailure(Exception):
+    pass
+
+
+def main():
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    etcd_peers_file = os.environ.get('ETCD_PEERS_FILE', '/etc/sysconfig/etcd-peers')
+
+    client_port = int(os.environ.get('ETCD_CLIENT_PORT', '2379'))
+    server_port = int(os.environ.get('ETCD_CLIENT_PORT', '2380'))
+
+    cloud_provider = CLOUD_PROVIDERS[os.environ.get('CLOUD_PROVIDER', 'aws')]()
+
+    etcd_proxy = os.environ.get('ETCD_PROXY', 'off')
+
+    etcd_client_scheme = os.environ.get('ETCD_CLIENT_SCHEME', 'http')
+    etcd_peer_scheme = os.environ.get('ETCD_PEER_SCHEME', 'http')
+
+    etcd_client_urls = ["%s://%s:2379" % (etcd_client_scheme, ip) for ip in cloud_provider.get_peer_ips()]
+    LOGGER.debug("etcd_client_urls: %s", etcd_client_urls)
+
+    # Finding existing members, if any
+    etcd_existing_peer_urls = []
+    etcd_existing_peer_names = []
+    etcd_good_member_url = None
+
+    for url in etcd_client_urls:
+        try:
+            response = requests.get("%s/v2/members" % url)
+            response.raise_for_status()
+            etcd_members = response.json()['members']
+        except requests.RequestException:
+            pass
+        else:
+            etcd_good_member_url = url
+            LOGGER.debug("etcd_members: %s", etcd_members)
+            etcd_existing_peer_urls = [member['peerURLs'][0] for member in etcd_members]
+            etcd_existing_peer_names = [member['name'] for member in etcd_members]
+            break
+
+    LOGGER.debug("etcd_good_member_url: %s", etcd_good_member_url)
+    LOGGER.debug("etcd_existing_peer_urls: %s", etcd_existing_peer_urls)
+    LOGGER.debug("etcd_existing_peer_names: %s", etcd_existing_peer_names)
+
+    # if I am not listed as a member of the cluster assume that this is a existing cluster
+    # this will also be the case for a proxy situation
+    if etcd_existing_peer_urls and cloud_provider.instance_id not in etcd_existing_peer_names:
+        LOGGER.info('joining existing cluster')
+
+        good_names = cloud_provider.get_peer_names()
+        for member in etcd_members:
+            if member['name'] not in good_names:
+                # This member's instanceId doesn't appear in our list, so remove it
+                response = requests.delete("%s/v2/members/%s" % (etcd_good_member_url, member['id']))
+                if response.status_code not in [DELETE_OK, DELETE_GONE]:
+                    LOGGER.warning("Failed to remove bad peer %s", member['id'])
+
+        # If we're not a proxy we add ourselves as a member to the cluster
+        if etcd_proxy == 'off':
+            response = requests.get("%s/v2/members" % etcd_good_member_url)
+            response.raise_for_status()
+            etcd_initial_cluster = ','.join(
+                ["%s=%s" % (member['name'], member['peerURLs'][0]) for member in response.json()['members']] +
+                ["%s=%s://%s:2380" % (cloud_provider.instance_id, etcd_peer_scheme, cloud_provider.instance_ip)]
+            )
+
+            # join an existing cluster
+            response = requests.post(
+                "%s/v2/members" % etcd_good_member_url,
+                json={
+                    'name': cloud_provider.instance_id,
+                    'peerURLs': ["%s://%s:2380" % (etcd_peer_scheme, cloud_provider.instance_ip)],
+                },
+            )
+            if response.status_code not in [ADD_OK, ALREADY_ADDED]:
+                LOGGER.warning("Failed to add ourselves (%s) as a peer: return code %s", cloud_provider.instance_ip, response.status_code)
+
+        # If we are a proxy we just want the list for the actual cluster
+        else:
+            response = requests.get("%s/v2/members" % etcd_good_member_url)
+            response.raise_for_status()
+            etcd_initial_cluster = ','.join(["%s=%s" % (member['name'], member['peerURLs'][0]) for member in response.json()['members']])
+
+        etcd_cluster_state = 'existing'
+
+    # otherwise I was already listed as a member so assume that this is a new cluster
+    else:
+        # create a new cluster
+        LOGGER.info('creating new cluster')
+
+        etcd_initial_cluster = ','.join(["%s=%s://%s:2380" % (name, etcd_peer_scheme, ip) for name, ip in cloud_provider.get_peer_name_and_ips()])
+
+        etcd_cluster_state = 'new'
+
+    LOGGER.debug("etcd_initial_cluster: %s", etcd_initial_cluster)
+    if not etcd_initial_cluster:
+        raise ConfigurationFailure('Unable to get peers')
+
+    with open(etcd_peers_file, 'w') as fobj:
+        fobj.write(textwrap.dedent("""
+            ETCD_INITIAL_CLUSTER_STATE=%(cluster_state)s
+            ETCD_NAME=%(instance_id)s
+            ETCD_INITIAL_CLUSTER="%(initial_cluster)s"
+            ETCD_PROXY=%(etcd_proxy)s
+        """ % {
+            'cluster_state': etcd_cluster_state,
+            'instance_id': cloud_provider.instance_id,
+            'initial_cluster': etcd_initial_cluster,
+            'etcd_proxy': etcd_proxy,
+        }))
+
+
+class CloudProvider(object):
+    def __init__(self):
+        super(CloudProvider, self).__init__()
+        self.instance_id = self.get_instance_id()
+        self.instance_ip = self.get_instance_ip()
+
+    def get_instance_id(self):
+        response = requests.get('http://169.254.169.254/latest/meta-data/instance-id')
+        response.raise_for_status()
+        return response.text
+
+    def get_instance_ip(self):
+        response = requests.get('http://169.254.169.254/latest/meta-data/local-ipv4')
+        response.raise_for_status()
+        return response.text
+
+    def get_peer_name_and_ips(self):
+        raise NotImplemented
+
+    def get_peer_ips(self):
+        return [pair[1] for pair in self.get_peer_name_and_ips()]
+
+    def get_peer_names(self):
+        return [pair[0] for pair in self.get_peer_name_and_ips()]
+
+
+class AWSCloudProvider(CloudProvider):
+    def __init__(self, *args, **kwargs):
+        super(AWSCloudProvider, self).__init__(*args, **kwargs)
+        self.region = requests.get('http://169.254.169.254/latest/dynamic/instance-identity/document').json()['region']
+
+    def guess_autoscaling_group(self):
+        client = boto3.client('autoscaling', region_name=self.region)
+        for group in client.describe_auto_scaling_groups()['AutoScalingGroups']:
+            for instance in group['Instances']:
+                if instance['InstanceId'] == self.instance_id:
+                    return group['AutoScalingGroupName']
+        raise ConfigurationFailure('Failed to get the auto scaling group name')
+
+    def get_autoscaling_group(self):
+        if 'ASG_NAME' in os.environ:
+            return os.environ['ASG_NAME']
+        else:
+            return self.guess_autoscaling_group()
+
+    def get_peer_name_and_ips(self):
+        autoscaling_client = boto3.client('autoscaling', region_name=self.region)
+        group = autoscaling_client.describe_auto_scaling_groups(AutoScalingGroupNames=[self.get_autoscaling_group()])['AutoScalingGroups'][0]
+        instance_ids = []
+        for instance in group['Instances']:
+            if instance['LifecycleState'] == 'InService':
+                instance_ids.append(instance['InstanceId'])
+
+        ec2_client = boto3.client('ec2', region_name=self.region)
+        peer_name_and_ips = []
+        for reservation in ec2_client.describe_instances(InstanceIds=instance_ids)['Reservations']:
+            for instance in reservation['Instances']:
+                for network_interface in instance['NetworkInterfaces']:
+                    peer_name_and_ips.append((instance['InstanceId'], network_interface['PrivateIpAddress']))
+
+        return peer_name_and_ips
+
+
+class OpenstackCloudProvider(CloudProvider):
+    pass
+
+
+CLOUD_PROVIDERS = {
+    'aws': AWSCloudProvider,
+    'openstack': OpenstackCloudProvider,
+}
+
+
+if __name__ == '__main__':
+    main()
