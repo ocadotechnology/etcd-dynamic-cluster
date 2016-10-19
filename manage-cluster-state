@@ -149,7 +149,7 @@ class CloudProvider(object):
         return response.text
 
     def get_peer_name_and_ips(self):
-        raise NotImplemented
+        raise NotImplementedError
 
     def get_peer_ips(self):
         return [pair[1] for pair in self.get_peer_name_and_ips()]
