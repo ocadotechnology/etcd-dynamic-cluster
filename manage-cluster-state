@@ -232,7 +232,9 @@ class OpenstackCloudProvider(CloudProvider):
         peer_name_and_ips = []
         for server in servers:
             if server.metadata.get(self.metadata_key, None) == self.metadata_value:
-                peer_name_and_ips.append(())
+                for address_list in server.addresses.values():
+                    for address in address_list:
+                        peer_name_and_ips.append((server.id, address['addr']))
         return peer_name_and_ips
 
 
