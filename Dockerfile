@@ -1,5 +1,7 @@
 FROM python:3-alpine
 
+RUN apk add --no-cache gcc linux-headers musl-dev python-dev
+
 COPY requirements.txt /
 COPY manage-cluster-state /
 
