@@ -199,7 +199,6 @@ class AWSCloudProvider(CloudProvider):
 
 class OpenstackCloudProvider(CloudProvider):
     def __init__(self, *args, **kwargs):
-        super(OpenstackCloudProvider, self).__init__(*args, **kwargs)
         auth = keystoneauth1.identity.v3.Password(
             auth_url=os.environ.get('OS_AUTH_URL'),
             username=os.environ.get('OS_USERNAME'),
@@ -212,6 +211,7 @@ class OpenstackCloudProvider(CloudProvider):
         self.nova = novaclient.client.Client('2', session=session)
         self.metadata_key = os.environ.get('OPENSTACK_METADATA_KEY')
         self.metadata_value = os.environ.get('OPENSTACK_METADATA_VALUE')
+        super(OpenstackCloudProvider, self).__init__(*args, **kwargs)
 
     def get_instance_id(self):
         '''
@@ -227,8 +227,6 @@ class OpenstackCloudProvider(CloudProvider):
                         return server.id
 
     def get_peer_name_and_ips(self):
-
-
         servers = self.nova.servers.list()
 
         peer_name_and_ips = []
