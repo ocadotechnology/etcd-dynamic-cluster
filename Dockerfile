@@ -1,11 +1,12 @@
 FROM python:3-alpine
 
-RUN apk add --no-cache gcc linux-headers musl-dev python-dev
-
 COPY requirements.txt /
-COPY manage-cluster-state /
 
-RUN pip install -r /requirements.txt
+RUN apk add --no-cache gcc linux-headers musl-dev python-dev && \
+    pip install --no-cache -r /requirements.txt && \
+    apk del gcc linux-headers musl-dev python-dev
+
+COPY manage-cluster-state /
 
 # Expose volume for adding credentials
 VOLUME ["/root/.aws"]
