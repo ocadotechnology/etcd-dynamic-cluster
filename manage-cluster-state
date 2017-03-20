@@ -2,9 +2,11 @@
 
 import ast
 import boto3
+import googleapiclient.discovery
 import keystoneauth1.identity
 import logging
 import novaclient.client
+import oauth2client.client
 import os
 import requests
 import textwrap
@@ -197,6 +199,42 @@ class AWSCloudProvider(CloudProvider):
         return peer_name_and_ips
 
 
+class GoogleCloudProvider(CloudProvider):
+    def __init__(self, *args, **kwargs):
+        self.required_tag = os.environ['GOOGLE_REQUIRED_TAG']
+        super(GoogleCloudProvider, self).__init__(*args, **kwargs)
+
+    def get_instance_id(self):
+        response = requests.get('http://169.254.169.254/computeMetadata/v1/instance/name', headers={'Metadata-Flavor': 'Google'})
+        response.raise_for_status()
+        return response.text
+
+    def get_instance_ip(self):
+        response = requests.get('http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/ip', headers={'Metadata-Flavor': 'Google'})
+        response.raise_for_status()
+        return response.text
+
+    def get_peer_name_and_ips(self):
+        response = requests.get('http://169.254.169.254/computeMetadata/v1/project/project-id', headers={'Metadata-Flavor': 'Google'})
+        response.raise_for_status()
+        project_name = response.text
+
+        credentials = oauth2client.client.GoogleCredentials.get_application_default()
+        compute = googleapiclient.discovery.build('compute', 'v1', credentials=credentials)
+
+        zones = compute.zones().list(project=project_name).execute()
+        instances = []
+        for zone in zones['items']:
+            instances.extend(compute.instances().list(project=project_name, zone=zone['name']).execute().get('items', []))
+
+        peer_name_and_ips = []
+        for instance in instances:
+            if self.required_tag in instance['tags']['items']:
+                for network_interface in instance['networkInterfaces']:
+                    peer_name_and_ips.append((instance['name'], network_interface['networkIP']))
+        return peer_name_and_ips
+
+
 class OpenstackCloudProvider(CloudProvider):
     def __init__(self, *args, **kwargs):
         auth = keystoneauth1.identity.v3.Password(
@@ -240,6 +278,7 @@ class OpenstackCloudProvider(CloudProvider):
 
 CLOUD_PROVIDERS = {
     'aws': AWSCloudProvider,
+    'google': GoogleCloudProvider,
     'openstack': OpenstackCloudProvider,
 }
 
