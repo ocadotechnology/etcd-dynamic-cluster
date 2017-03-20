@@ -1,3 +1,4 @@
 boto3
+google-api-python-client
 python-novaclient
 requests
