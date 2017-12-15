@@ -246,7 +246,8 @@ class OpenstackCloudProvider(CloudProvider):
             project_domain_name=os.environ['OS_PROJECT_DOMAIN_NAME'],
         )
         session = keystoneauth1.session.Session(auth=auth)
-        self.nova = novaclient.client.Client('2', session=session)
+        region_name = os.environ.get('OS_REGION_NAME', None)
+        self.nova = novaclient.client.Client('2', session=session, region_name=region_name)
         self.metadata_key = os.environ['OPENSTACK_METADATA_KEY']
         self.metadata_value = os.environ['OPENSTACK_METADATA_VALUE']
         super(OpenstackCloudProvider, self).__init__(*args, **kwargs)
