@@ -205,7 +205,7 @@ class GoogleCloudProvider(CloudProvider):
         super(GoogleCloudProvider, self).__init__(*args, **kwargs)
 
     def get_instance_id(self):
-        response = requests.get('http://169.254.169.254/computeMetadata/v1/instance/name', headers={'Metadata-Flavor': 'Google'})
+        response = requests.get('http://169.254.169.254/computeMetadata/v1/instance/id', headers={'Metadata-Flavor': 'Google'})
         response.raise_for_status()
         return response.text
 
@@ -231,7 +231,7 @@ class GoogleCloudProvider(CloudProvider):
         for instance in instances:
             if self.required_tag in instance['tags']['items']:
                 for network_interface in instance['networkInterfaces']:
-                    peer_name_and_ips.append((instance['name'], network_interface['networkIP']))
+                    peer_name_and_ips.append((instance['id'], network_interface['networkIP']))
         return peer_name_and_ips
 
 
