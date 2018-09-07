@@ -220,7 +220,7 @@ class GoogleCloudProvider(CloudProvider):
         project_name = response.text
 
         credentials = oauth2client.client.GoogleCredentials.get_application_default()
-        compute = googleapiclient.discovery.build('compute', 'v1', credentials=credentials)
+        compute = googleapiclient.discovery.build('compute', 'v1', credentials=credentials, cache_discovery=False)
 
         zones = compute.zones().list(project=project_name).execute()
         instances = []
